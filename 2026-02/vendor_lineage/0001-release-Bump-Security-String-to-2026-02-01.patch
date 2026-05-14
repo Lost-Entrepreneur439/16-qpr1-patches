@@ -1,0 +1,39 @@
+From 9e399fd3661dcff88f6947dc640b2bafa7df2421 Mon Sep 17 00:00:00 2001
+From: Nolen Johnson <johnsonnolen@gmail.com>
+Date: Mon, 02 Feb 2026 14:16:22 -0500
+Subject: [PATCH] release: Bump Security String to 2026-02-01
+
+Implemented:
+============
+None
+
+Previously Implemented:
+================
+None
+
+Not Implemented:
+================
+None
+
+Not Applicable (platform source):
+=================================
+None
+
+Change-Id: Ib13b17ea28d811f3f29b202e16b39b8983c005e8
+---
+ .../flag_values/bp3a/RELEASE_PLATFORM_SECURITY_PATCH.textproto  | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/release/flag_values/bp3a/RELEASE_PLATFORM_SECURITY_PATCH.textproto b/release/flag_values/bp3a/RELEASE_PLATFORM_SECURITY_PATCH.textproto
+index cc37bf6..61960cd 100644
+--- a/release/flag_values/bp3a/RELEASE_PLATFORM_SECURITY_PATCH.textproto
++++ b/release/flag_values/bp3a/RELEASE_PLATFORM_SECURITY_PATCH.textproto
+@@ -1,4 +1,4 @@
+ name: "RELEASE_PLATFORM_SECURITY_PATCH"
+ value {
+-  string_value: "2026-01-01"
++  string_value: "2026-02-01"
+ }
+-- 
+2.53.0
+
