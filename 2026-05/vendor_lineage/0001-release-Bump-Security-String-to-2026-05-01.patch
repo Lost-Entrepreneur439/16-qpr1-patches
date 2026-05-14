@@ -1,0 +1,40 @@
+From 6a10ca12049974589418a2b84211b95c94d535c3 Mon Sep 17 00:00:00 2001
+From: Nolen Johnson <johnsonnolen@gmail.com>
+Date: Thu, 09 Apr 2026 17:01:29 -0400
+Subject: [PATCH] release: Bump Security String to 2026-05-01
+
+Implemented:
+============
+CVE:            References:    Type:  Severity:  Updated AOSP versions:
+CVE-2026-0073   A-469080888    RCE    Critical   14, 15, 16, 16-qpr2
+
+Previously Implemented:
+================
+None
+
+Not Implemented:
+================
+None
+
+Not Applicable (platform source):
+=================================
+None
+
+Change-Id: Ibfc0f914639a9a648504d681ee488bd39b4dfb4d
+---
+ .../flag_values/bp3a/RELEASE_PLATFORM_SECURITY_PATCH.textproto  | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/release/flag_values/bp3a/RELEASE_PLATFORM_SECURITY_PATCH.textproto b/release/flag_values/bp3a/RELEASE_PLATFORM_SECURITY_PATCH.textproto
+index d484f23..900c1e4 100644
+--- a/release/flag_values/bp3a/RELEASE_PLATFORM_SECURITY_PATCH.textproto
++++ b/release/flag_values/bp3a/RELEASE_PLATFORM_SECURITY_PATCH.textproto
+@@ -1,4 +1,4 @@
+ name: "RELEASE_PLATFORM_SECURITY_PATCH"
+ value {
+-  string_value: "2026-04-01"
++  string_value: "2026-05-01"
+ }
+-- 
+2.53.0
+
