@@ -1,0 +1,90 @@
+From 5449bc506416a35296066bcd75beb878a6088ab1 Mon Sep 17 00:00:00 2001
+From: Michael Bestas <mkbestas@lineageos.org>
+Date: Tue, 03 Mar 2026 20:26:56 +0200
+Subject: [PATCH] release: Bump Security String to 2026-03-01
+
+Implemented:
+============
+CVE:            References:    Type:  Severity:  Updated AOSP versions:
+CVE-2025-48630  A-455563813    ID     High       14, 15, 16, 16-qpr2
+CVE-2025-48641  A-392699284    EoP    High       14, 15, 16, 16-qpr2
+CVE-2025-48642  A-455777515    ID     High       14, 15, 16, 16-qpr2
+CVE-2025-48644  A-449181366    DoS    High       14, 15, 16, 16-qpr2
+CVE-2025-48645  A-443062265    EoP    High       14, 15, 16, 16-qpr2
+CVE-2025-48646  A-457742426    EoP    High       14, 15, 16, 16-qpr2
+CVE-2025-48653  A-435737668    EoP    High       14, 15, 16, 16-qpr2
+CVE-2025-48654  A-442392902    EoP    High       16, 16-qpr2
+CVE-2025-64783  A-483074175    ID     High       14, 15, 16, 16-qpr2
+CVE-2025-64784  A-483074618    ID     High       14, 15, 16, 16-qpr2
+CVE-2025-64893  A-483075215    ID     High       14, 15, 16, 16-qpr2
+CVE-2026-0005   A-366405211    ID     High       14, 15, 16
+CVE-2026-0007   A-433251166    EoP    High       14, 15, 16
+CVE-2026-0008   A-433252423    EoP    High       16
+CVE-2026-0010   A-379695596    EoP    High       14, 15, 16
+CVE-2026-0011   A-454062218    EoP    High       14, 15, 16, 16-qpr2
+CVE-2026-0013   A-447135012    EoP    High       14, 15, 16
+CVE-2026-0014   A-443742082    DoS    High       14, 15, 16, 16-qpr2
+CVE-2026-0015   A-445917646    DoS    High       14, 15, 16, 16-qpr2
+CVE-2026-0017   A-444673089    EoP    High       16, 16-qpr2
+CVE-2026-0020   A-453649815    EoP    High       14, 15, 16, 16-qpr2
+CVE-2026-0021   A-430047417    EoP    High       14, 15, 16, 16-qpr2
+CVE-2026-0023   A-459461121    EoP    High       14, 15, 16, 16-qpr2
+CVE-2026-0024   A-326211886    ID     High       14, 15, 16, 16-qpr2
+CVE-2026-0025   A-433746973    ID     High       14, 15, 16, 16-qpr2
+CVE-2026-0034   A-428701593    EoP    High       14, 15, 16, 16-qpr2
+CVE-2026-0035   A-418773439    EoP    High       14, 15, 16, 16-qpr2
+CVE-2026-0047   A-465136263    EoP    Critical   16-qpr2
+
+Previously Implemented:
+================
+CVE:            References:    Type:  Severity:  Updated AOSP versions:
+CVE-2024-43766  A-288144143    ID     High       14, 15, 16
+CVE-2025-32313  A-399155883    EoP    High       14, 15, 16
+CVE-2025-48544  A-415783046    EoP    High       14, 15, 16
+CVE-2025-48567  A-377888957    EoP    High       14, 15, 16
+CVE-2025-48574  A-428700812    EoP    High       14, 15, 16
+CVE-2025-48577  A-413380719    EoP    High       14, 15, 16
+CVE-2025-48578  A-418225717    EoP    High       14, 15, 16
+CVE-2025-48579  A-417195606    EoP    High       14, 15, 16
+CVE-2025-48582  A-369105011    EoP    High       14, 15, 16
+CVE-2025-48585  A-425360742    DoS    High       16
+CVE-2025-48587  A-425360073    DoS    High       16
+CVE-2025-48602  A-407562568    EoP    High       14, 15, 16
+CVE-2025-48605  A-395640609    EoP    High       14, 15, 16
+CVE-2025-48609  A-414388731    DoS    High       14, 15, 16
+CVE-2025-48619  A-414387646    EoP    High       14, 15, 16
+CVE-2025-48631  A-444671303    DoS    Critical   14, 15, 16, 16-qpr2
+CVE-2025-48634  A-406243581    EoP    High       14, 15, 16
+CVE-2025-48650  A-388530367    EoP    High       14, 15, 16
+CVE-2026-0006   A-423894847    RCE    Critical   16
+CVE-2026-0012   A-392614656    ID     High       14, 15, 16
+
+Not Implemented:
+================
+None
+
+Not Applicable (platform source):
+=================================
+CVE:            References:    Type:  Severity:  Updated AOSP versions:
+CVE-2025-48568  A-322157041    EoP    High       14, 15
+CVE-2025-48635  A-446678690    EoP    High       14, 15
+CVE-2026-0026   A-321711213    EoP    High       14
+
+Change-Id: If697040de2803e8538fc1649e98b482f8c614041
+---
+ .../flag_values/bp3a/RELEASE_PLATFORM_SECURITY_PATCH.textproto  | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/release/flag_values/bp3a/RELEASE_PLATFORM_SECURITY_PATCH.textproto b/release/flag_values/bp3a/RELEASE_PLATFORM_SECURITY_PATCH.textproto
+index 61960cd..f0369e2 100644
+--- a/release/flag_values/bp3a/RELEASE_PLATFORM_SECURITY_PATCH.textproto
++++ b/release/flag_values/bp3a/RELEASE_PLATFORM_SECURITY_PATCH.textproto
+@@ -1,4 +1,4 @@
+ name: "RELEASE_PLATFORM_SECURITY_PATCH"
+ value {
+-  string_value: "2026-02-01"
++  string_value: "2026-03-01"
+ }
+-- 
+2.53.0
+

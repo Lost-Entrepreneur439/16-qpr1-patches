@@ -1,0 +1,59 @@
+From a5f584479b9763ef0097d22fe37772bd3321a46b Mon Sep 17 00:00:00 2001
+From: Eric Miao <ericymiao@google.com>
+Date: Thu, 15 Jan 2026 18:46:15 +0000
+Subject: [PATCH 17/18] Enforce permission and debuggability for `am
+ dumpbitmaps`
+
+The previous implementation did not check for permission and
+debuggability for `am dumpbitmaps`, which allows a malicious
+app to access bitmaps in memory of other processes.
+
+Detailed vulnerability and how a malicious app could make use
+of it are documented in b/465136263.
+
+This CL enforces both permission check (with the same permission
+as `am dumpheap`) and debuggability.
+
+Bug: 465136263
+Bug: 475543853
+Flag: EXEMPT BUGFIX
+Cherrypick-From: https://googleplex-android-review.googlesource.com/q/commit:93b72e5a84815c09d5eac89fe8f974a44002c629
+Merged-In: I10836ce46969f50d837f7f8bf6336f977e830f05
+Change-Id: I10836ce46969f50d837f7f8bf6336f977e830f05
+See: b/465136263#comment27
+---
+ .../com/android/server/am/ActivityManagerService.java | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/services/core/java/com/android/server/am/ActivityManagerService.java b/services/core/java/com/android/server/am/ActivityManagerService.java
+index a8c4b6b20..51eb64919 100644
+--- a/services/core/java/com/android/server/am/ActivityManagerService.java
++++ b/services/core/java/com/android/server/am/ActivityManagerService.java
+@@ -16167,6 +16167,10 @@ public class ActivityManagerService extends IActivityManager.Stub
+     @NeverCompile // Avoid size overhead of debugging code.
+     public void dumpBitmapsProto(ParcelFileDescriptor fd, String[] processes, int userId,
+                             boolean allPkgs, String dumpFormat) {
++        // note: re-use the same permission as dumpHeap until its own permission is available
++        enforceCallingPermission(android.Manifest.permission.SET_ACTIVITY_WATCHER,
++                "dumpBitmapsProto()");
++
+         ProtoOutputStream proto = new ProtoOutputStream(fd.getFileDescriptor());
+         final ArrayList<ProcessRecord> procs = collectProcesses(null, 0, allPkgs, processes);
+         if (procs == null) {
+@@ -16183,6 +16187,13 @@ public class ActivityManagerService extends IActivityManager.Stub
+                 if (thread == null) {
+                     continue;
+                 }
++
++                // check process debuggability
++                if (!Build.IS_DEBUGGABLE && !r.isDebuggable()) {
++                    Slog.w(TAG, "Process not debuggable: " + r.info.packageName);
++                    continue;
++                }
++
+                 try {
+                     if (pid == Process.myPid()) {
+                         // Directly dump to target proto for local dump to avoid hang.
+-- 
+2.53.0
+

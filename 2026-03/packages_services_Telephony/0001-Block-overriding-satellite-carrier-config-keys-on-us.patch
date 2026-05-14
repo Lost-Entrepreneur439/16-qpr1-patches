@@ -1,0 +1,240 @@
+From b4d71423b50e69ec6544c4d0ebc862b95852e6c5 Mon Sep 17 00:00:00 2001
+From: Jayachandran C <jayachandranc@google.com>
+Date: Thu, 23 Oct 2025 11:30:50 -0700
+Subject: [PATCH] Block overriding satellite carrier config keys on user builds
+
+Add a blocklist to CarrierConfigLoader.overrideConfig to prevent certain sensitive carrier config keys from being overridden on user builds.
+
+The following keys are now blocklisted:
+
+KEY_SATELLITE_ENTITLEMENT_SUPPORTED_BOOL
+KEY_SATELLITE_DATA_SUPPORT_MODE_INT
+
+Attempting to override these keys on a user build will result in a SecurityException. This restriction does not affect userdebug or eng builds, where overriding these values for testing purposes is still allowed.
+
+Test: Added CarrierConfigLoaderTest#testOverrideConfig_blockedKeys to verify the new logic.
+Flag: EXEMPT BUGFIX
+Bug: 442272360
+Cherrypick-From: https://googleplex-android-review.googlesource.com/q/commit:134c0399421799fa53b54473644c8d544f395283
+Merged-In: I9107d90cf07f0c1171c9c67b5a29f47b1d33e527
+Change-Id: I9107d90cf07f0c1171c9c67b5a29f47b1d33e527
+---
+ .../android/phone/CarrierConfigLoader.java    | 55 ++++++++++---
+ .../android/phone/PhoneInterfaceManager.java  |  1 -
+ .../phone/CarrierConfigLoaderTest.java        | 81 ++++++++++++++++++-
+ 3 files changed, 123 insertions(+), 14 deletions(-)
+
+diff --git a/src/com/android/phone/CarrierConfigLoader.java b/src/com/android/phone/CarrierConfigLoader.java
+index 83566ea..272600a 100644
+--- a/src/com/android/phone/CarrierConfigLoader.java
++++ b/src/com/android/phone/CarrierConfigLoader.java
+@@ -110,6 +110,11 @@ public class CarrierConfigLoader extends ICarrierConfigLoader.Stub {
+     private static final SimpleDateFormat TIME_FORMAT =
+             new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US);
+ 
++    private static final Set<String> OVERRIDE_BLOCKLIST_ON_USER_BUILD = Set.of(
++            CarrierConfigManager.KEY_SATELLITE_ENTITLEMENT_SUPPORTED_BOOL,
++            CarrierConfigManager.KEY_SATELLITE_DATA_SUPPORT_MODE_INT
++    );
++
+     // Package name for platform carrier config app, bundled with system image.
+     @NonNull private final String mPlatformCarrierConfigPackage;
+ 
+@@ -1463,18 +1468,48 @@ public class CarrierConfigLoader extends ICarrierConfigLoader.Stub {
+         return configSubset;
+     }
+ 
+-    @android.annotation.EnforcePermission(android.Manifest.permission.MODIFY_PHONE_STATE)
+-    @Override
+-    public void overrideConfig(int subscriptionId, @Nullable PersistableBundle overrides,
+-            boolean persistent) {
+-        overrideConfig_enforcePermission();
+-
++    private void secureOverrideConfig(@Nullable PersistableBundle overrides, boolean persistent) {
+         // Do not allow shell UID to override the carrier config. This will not impact
+         // the CTS and telephony shell commands as they use different uids
+         if (TelephonyPermissions.isShell(getCallingUid())) {
+             throw new SecurityException("overrideConfig cannot be invoked by shell");
+         }
+ 
++        final long token = Binder.clearCallingIdentity();
++        try {
++            TelephonyManager tm = mContext.getSystemService(TelephonyManager.class);
++            String modemService = tm.getModemService();
++            logd("modemService=" + modemService);
++            boolean isMockModemService =
++                    "android.telephony.mockmodem.MockModemService".equals(modemService);
++
++            // Do not allow blocklisted keys to be overridden when device is connected
++            // to a real modem.
++            if (isUserBuild() && overrides != null && !isMockModemService) {
++                for (String key : OVERRIDE_BLOCKLIST_ON_USER_BUILD) {
++                    if (overrides.containsKey(key)) {
++                        throw new SecurityException("Overriding " + key
++                                + " is not allowed on user builds.");
++                    }
++                }
++            }
++        } finally {
++            Binder.restoreCallingIdentity(token);
++        }
++
++        if (persistent && isUserBuild() && !isSystemApp()) {
++            throw new SecurityException("overrideConfig with persistent=true only can be "
++                    + "invoked by system app");
++        }
++    }
++
++    @android.annotation.EnforcePermission(android.Manifest.permission.MODIFY_PHONE_STATE)
++    @Override
++    public void overrideConfig(int subscriptionId, @Nullable PersistableBundle overrides,
++            boolean persistent) {
++        overrideConfig_enforcePermission();
++        secureOverrideConfig(overrides, persistent);
++
+         int phoneId = SubscriptionManager.getPhoneId(subscriptionId);
+         if (!SubscriptionManager.isValidPhoneId(phoneId)) {
+             logd("Ignore invalid phoneId: " + phoneId + " for subId: " + subscriptionId);
+@@ -1490,11 +1525,6 @@ public class CarrierConfigLoader extends ICarrierConfigLoader.Stub {
+             overrideConfig(mOverrideConfigs, phoneId, overrides);
+ 
+             if (persistent) {
+-                if (isUserBuild() && !isSystemApp()) {
+-                    throw new SecurityException("overrideConfig with persistent=true only can be "
+-                            + "invoked by system app");
+-                }
+-
+                 overrideConfig(mPersistentOverrideConfigs, phoneId, overrides);
+ 
+                 if (overrides != null) {
+@@ -1532,7 +1562,8 @@ public class CarrierConfigLoader extends ICarrierConfigLoader.Stub {
+         }
+     }
+ 
+-    private boolean isUserBuild() {
++    @VisibleForTesting
++    public boolean isUserBuild() {
+         return "user".equals(android.os.Build.TYPE);
+     }
+ 
+diff --git a/src/com/android/phone/PhoneInterfaceManager.java b/src/com/android/phone/PhoneInterfaceManager.java
+index c0b91a4..188b800 100644
+--- a/src/com/android/phone/PhoneInterfaceManager.java
++++ b/src/com/android/phone/PhoneInterfaceManager.java
+@@ -12849,7 +12849,6 @@ public class PhoneInterfaceManager extends ITelephony.Stub {
+     public String getModemService() {
+         String result;
+         Log.d(LOG_TAG, "getModemService");
+-        TelephonyPermissions.enforceShellOnly(Binder.getCallingUid(), "getModemService");
+         TelephonyPermissions
+                 .enforceCallingOrSelfReadPrivilegedPhoneStatePermissionOrCarrierPrivilege(
+                         mApp, SubscriptionManager.INVALID_SUBSCRIPTION_ID,
+diff --git a/tests/src/com/android/phone/CarrierConfigLoaderTest.java b/tests/src/com/android/phone/CarrierConfigLoaderTest.java
+index 5b306e6..2bf8db8 100644
+--- a/tests/src/com/android/phone/CarrierConfigLoaderTest.java
++++ b/tests/src/com/android/phone/CarrierConfigLoaderTest.java
+@@ -20,6 +20,7 @@ import static com.android.TestContext.STUB_PERMISSION_ENABLE_ALL;
+ 
+ import static com.google.common.truth.Truth.assertThat;
+ 
++import static org.junit.Assert.assertNotNull;
+ import static org.junit.Assert.assertThrows;
+ import static org.junit.Assert.fail;
+ import static org.mockito.ArgumentMatchers.any;
+@@ -151,7 +152,12 @@ public class CarrierConfigLoaderTest extends TelephonyTestBase {
+                 mTelephonyRegistryManager);
+ 
+         mCarrierConfigLoader = new CarrierConfigLoader(mContext, mTestLooper,
+-                mFeatureFlags);
++                mFeatureFlags) {
++            @Override
++            public boolean isUserBuild() {
++                return true;
++            }
++        };
+         mHandler = mCarrierConfigLoader.getHandler();
+ 
+         // Clear all configs to have the same starting point.
+@@ -327,6 +333,79 @@ public class CarrierConfigLoaderTest extends TelephonyTestBase {
+                 any(PersistableBundle.class), any(Runnable.class));
+     }
+ 
++    /**
++     * The test case verified the blocking of the selectable carrier config values not to be
++     * override. The same values are allowed in case if that is MockModem to run the CTS test
++     * cases.
++     */
++    @Test
++    public void testOverrideConfig_blockedKeys() {
++        if (!SubscriptionManager.isValidPhoneId(SubscriptionManager.getPhoneId(DEFAULT_SUB_ID))) {
++            return;
++        }
++        mFakePermissionEnforcer.grant(android.Manifest.permission.MODIFY_PHONE_STATE);
++        PersistableBundle overrides = new PersistableBundle();
++
++        // Case 1, If mock modem service is used, it should be allowed.
++        when(mTelephonyManager.getModemService()).thenReturn(
++                "android.telephony.mockmodem.MockModemService");
++        overrides.putBoolean(
++                CarrierConfigManager.KEY_SATELLITE_ENTITLEMENT_SUPPORTED_BOOL, false);
++        mCarrierConfigLoader.overrideConfig(DEFAULT_SUB_ID, overrides /*overrides*/,
++                false/*persistent*/);
++        processOneMessage();
++        processOneMessage();
++        assertNotNull(mCarrierConfigLoader.getOverrideConfig(DEFAULT_PHONE_ID));
++        assertThat(mCarrierConfigLoader.getOverrideConfig(DEFAULT_PHONE_ID).getBoolean(
++                CarrierConfigManager.KEY_SATELLITE_ENTITLEMENT_SUPPORTED_BOOL)).isFalse();
++
++        // Clear override config for next test.
++        mCarrierConfigLoader.overrideConfig(DEFAULT_SUB_ID, null, false);
++
++        // Case 2, If not mock modem then do not override and throw security exception as the key
++        // KEY_SATELLITE_ENTITLEMENT_SUPPORTED_BOOL is blocked.
++        when(mTelephonyManager.getModemService()).thenReturn(null);
++        overrides.clear();
++        overrides.putBoolean(
++                CarrierConfigManager.KEY_SATELLITE_ENTITLEMENT_SUPPORTED_BOOL, false);
++        try {
++            // Call overrideConfig on the local instance
++            mCarrierConfigLoader.overrideConfig(DEFAULT_SUB_ID, overrides /*overrides*/,
++                    false/*persistent*/);
++            fail("Not received the SecurityException");
++        } catch (SecurityException se) {
++            // expected
++        }
++
++        // Case 3, In case of mock modem and userBuild is true the key
++        // KEY_SATELLITE_ATTACH_SUPPORTED_BOOL is allowed as it is not blocked
++        when(mTelephonyManager.getModemService()).thenReturn(
++                "android.telephony.mockmodem.MockModemService");
++        overrides.clear();
++        overrides.putBoolean(
++                CarrierConfigManager.KEY_SATELLITE_ATTACH_SUPPORTED_BOOL, true);
++        mCarrierConfigLoader.clearConfigForPhone(DEFAULT_PHONE_ID, false);
++        mCarrierConfigLoader.overrideConfig(DEFAULT_SUB_ID, overrides /*overrides*/,
++                false/*persistent*/);
++        processOneMessage();
++        processOneMessage();
++        assertThat(mCarrierConfigLoader.getOverrideConfig(DEFAULT_PHONE_ID).getBoolean(
++                CarrierConfigManager.KEY_SATELLITE_ATTACH_SUPPORTED_BOOL)).isTrue();
++
++        // Case 4, In case not a mock modem still KEY_SATELLITE_ATTACH_SUPPORTED_BOOL is allowed
++        // as it is not blocked
++        when(mTelephonyManager.getModemService()).thenReturn(null);
++        overrides.clear();
++        overrides.putBoolean(
++                CarrierConfigManager.KEY_SATELLITE_ATTACH_SUPPORTED_BOOL, false);
++        mCarrierConfigLoader.overrideConfig(DEFAULT_SUB_ID, overrides /*overrides*/,
++                false/*persistent*/);
++        processAllMessages();
++        assertThat(mCarrierConfigLoader.getOverrideConfig(DEFAULT_PHONE_ID).getBoolean(
++                CarrierConfigManager.KEY_SATELLITE_ATTACH_SUPPORTED_BOOL)).isFalse();
++
++    }
++
+     /**
+      * Verifies that IllegalArgumentException should throw when calling
+      * #notifyConfigChangedForSubId() with invalid subId.
+-- 
+2.53.0
+

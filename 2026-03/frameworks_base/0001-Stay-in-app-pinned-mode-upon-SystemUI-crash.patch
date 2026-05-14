@@ -1,0 +1,232 @@
+From a02500d6d997e60e5914300d5792b052c333caee Mon Sep 17 00:00:00 2001
+From: Brad Hinegardner <bhinegardner@google.com>
+Date: Thu, 4 Sep 2025 18:27:05 +0000
+Subject: [PATCH 01/18] Stay in app pinned mode upon SystemUI crash
+
+Bug: b/366405211
+Test: atest LockTaskControllerTest.java
+Flag: EXEMPT BUGFIX
+(cherry picked from commit 575845147cb48d71893f12665bae2e8892aa7e06)
+Cherrypick-From: https://googleplex-android-review.googlesource.com/q/commit:8a0f8df37587f1677cc6ab80a567d8f82ff78121
+Merged-In: Ia9f54b229b998e29da53436ed6ed64214903724c
+Change-Id: Ia9f54b229b998e29da53436ed6ed64214903724c
+---
+ .../android/app/IActivityTaskManager.aidl     |  1 +
+ .../keyguard/KeyguardViewMediator.java        | 13 ++++
+ .../keyguard/KeyguardServiceDelegate.java     |  3 +
+ .../server/wm/ActivityTaskManagerService.java | 14 +++++
+ .../android/server/wm/LockTaskController.java | 35 +++++++++++
+ .../server/wm/LockTaskControllerTest.java     | 61 +++++++++++++++++++
+ 6 files changed, 127 insertions(+)
+
+diff --git a/core/java/android/app/IActivityTaskManager.aidl b/core/java/android/app/IActivityTaskManager.aidl
+index 4d7cadad1..4ade8d77a 100644
+--- a/core/java/android/app/IActivityTaskManager.aidl
++++ b/core/java/android/app/IActivityTaskManager.aidl
+@@ -181,6 +181,7 @@ interface IActivityTaskManager {
+     List<IBinder> getAppTasks(in String callingPackage);
+     void startSystemLockTaskMode(int taskId);
+     void stopSystemLockTaskMode();
++    void rebuildSystemLockTaskPinnedMode();
+     void finishVoiceTask(in IVoiceInteractionSession session);
+     int addAppTask(in IBinder activityToken, in Intent intent,
+             in ActivityManager.TaskDescription description, in Bitmap thumbnail);
+diff --git a/packages/SystemUI/src/com/android/systemui/keyguard/KeyguardViewMediator.java b/packages/SystemUI/src/com/android/systemui/keyguard/KeyguardViewMediator.java
+index 35faede12..3692c9c7c 100644
+--- a/packages/SystemUI/src/com/android/systemui/keyguard/KeyguardViewMediator.java
++++ b/packages/SystemUI/src/com/android/systemui/keyguard/KeyguardViewMediator.java
+@@ -16,6 +16,7 @@
+ 
+ package com.android.systemui.keyguard;
+ 
++import static android.app.ActivityManager.LOCK_TASK_MODE_PINNED;
+ import static android.app.KeyguardManager.LOCK_ON_USER_SWITCH_CALLBACK;
+ import static android.app.StatusBarManager.SESSION_KEYGUARD;
+ import static android.provider.Settings.Secure.LOCK_SCREEN_LOCK_AFTER_TIMEOUT;
+@@ -49,6 +50,7 @@ import android.animation.Animator;
+ import android.animation.AnimatorListenerAdapter;
+ import android.animation.ValueAnimator;
+ import android.annotation.SuppressLint;
++import android.app.ActivityTaskManager;
+ import android.app.AlarmManager;
+ import android.app.BroadcastOptions;
+ import android.app.IActivityTaskManager;
+@@ -4016,6 +4018,17 @@ public class KeyguardViewMediator implements CoreStartable,
+             if (mBootSendUserPresent) {
+                 sendUserPresentBroadcast();
+             }
++
++            mHandler.post(() -> {
++                try {
++                    if (mActivityTaskManagerService.getLockTaskModeState()
++                            == LOCK_TASK_MODE_PINNED) {
++                        mActivityTaskManagerService.rebuildSystemLockTaskPinnedMode();
++                    }
++                } catch (RemoteException e) {
++                    Log.e(TAG, "Failed to rebuild lock task pinned mode", e);
++                }
++            });
+         }
+     }
+ 
+diff --git a/services/core/java/com/android/server/policy/keyguard/KeyguardServiceDelegate.java b/services/core/java/com/android/server/policy/keyguard/KeyguardServiceDelegate.java
+index b4b4f1371..694105f7a 100644
+--- a/services/core/java/com/android/server/policy/keyguard/KeyguardServiceDelegate.java
++++ b/services/core/java/com/android/server/policy/keyguard/KeyguardServiceDelegate.java
+@@ -239,7 +239,10 @@ public class KeyguardServiceDelegate {
+         public void onServiceDisconnected(ComponentName name) {
+             if (DEBUG) Log.v(TAG, "*** Keyguard disconnected (boo!)");
+             mKeyguardService = null;
++            // Remember the keyguard enabled state when the service is disconnected.
++            boolean wasEnabled = mKeyguardState.enabled;
+             mKeyguardState.reset();
++            mKeyguardState.enabled = wasEnabled;
+             mHandler.post(() -> {
+                 try {
+                     ActivityTaskManager.getService().setLockScreenShown(true /* keyguardShowing */,
+diff --git a/services/core/java/com/android/server/wm/ActivityTaskManagerService.java b/services/core/java/com/android/server/wm/ActivityTaskManagerService.java
+index ea610cb0e..7beaf51b5 100644
+--- a/services/core/java/com/android/server/wm/ActivityTaskManagerService.java
++++ b/services/core/java/com/android/server/wm/ActivityTaskManagerService.java
+@@ -2705,6 +2705,20 @@ public class ActivityTaskManagerService extends IActivityTaskManager.Stub {
+         stopLockTaskModeInternal(null, true /* isSystemCaller */);
+     }
+ 
++    @Override
++    public void rebuildSystemLockTaskPinnedMode() {
++        enforceTaskPermission("rebuildSystemLockTaskPinnedMode");
++        // This makes inner call to look as if it was initiated by system.
++        final long ident = Binder.clearCallingIdentity();
++        try {
++            synchronized (mGlobalLock) {
++                getLockTaskController().rebuildSystemLockTaskPinnedMode();
++            }
++        } finally {
++            Binder.restoreCallingIdentity(ident);
++        }
++    }
++
+     void startLockTaskMode(@Nullable Task task, boolean isSystemCaller) {
+         ProtoLog.w(WM_DEBUG_LOCKTASK, "startLockTaskMode: %s", task);
+         if (task == null || task.mLockTaskAuth == LOCK_TASK_AUTH_DONT_LOCK) {
+diff --git a/services/core/java/com/android/server/wm/LockTaskController.java b/services/core/java/com/android/server/wm/LockTaskController.java
+index 4726504e7..23167bf57 100644
+--- a/services/core/java/com/android/server/wm/LockTaskController.java
++++ b/services/core/java/com/android/server/wm/LockTaskController.java
+@@ -687,6 +687,41 @@ public class LockTaskController {
+                 "startLockTask", true);
+     }
+ 
++    /**
++     * Method to rebuild Lock Task Pinned Mode. This uses the existing locked tasks.
++     */
++    void rebuildSystemLockTaskPinnedMode() {
++        int lockTaskModeState = mLockTaskModeState;
++        if (lockTaskModeState != LOCK_TASK_MODE_PINNED) {
++            Slog.e(TAG_LOCKTASK,
++                    "rebuildSystemLockTaskPinnedMode: Attempt to rebuild pinned mode but not in "
++                            + "pinned mode.");
++            return;
++        }
++        if (mLockTaskModeTasks.isEmpty()) {
++            Slog.i(TAG_LOCKTASK,
++                    "rebuildSystemLockTaskPinnedMode: mLockTaskModeTasks empty, nothing to "
++                            + "rebuild.");
++            return;
++        }
++        Task task = mLockTaskModeTasks.getFirst();
++        mSupervisor.mRecentTasks.onLockTaskModeStateChanged(LOCK_TASK_MODE_PINNED, task.mUserId);
++        // rebuild pinned mode on the handler thread
++        mHandler.post(() -> {
++            try {
++                final IStatusBarService statusBarService = getStatusBarService();
++                if (statusBarService != null) {
++                    statusBarService.showPinningEnterExitToast(true /* entering */);
++                }
++                mTaskChangeNotificationController.notifyLockTaskModeChanged(lockTaskModeState);
++                setStatusBarState(lockTaskModeState, task.mUserId);
++                setKeyguardState(lockTaskModeState, task.mUserId);
++            } catch (RemoteException ex) {
++                throw new RuntimeException(ex);
++            }
++        });
++    }
++
+     /**
+      * Start lock task mode on the given task.
+      * @param lockTaskModeState whether fully locked or pinned mode.
+diff --git a/services/tests/wmtests/src/com/android/server/wm/LockTaskControllerTest.java b/services/tests/wmtests/src/com/android/server/wm/LockTaskControllerTest.java
+index 5122aeee5..1bcb4adea 100644
+--- a/services/tests/wmtests/src/com/android/server/wm/LockTaskControllerTest.java
++++ b/services/tests/wmtests/src/com/android/server/wm/LockTaskControllerTest.java
+@@ -318,6 +318,67 @@ public class LockTaskControllerTest {
+         assertFalse(mLockTaskController.isLockTaskModeViolation(cellbroadcastreceiver));
+     }
+ 
++    @Test
++    public void testRebuildSystemLockTaskPinnedMode_lockTaskModeTasksEmpty_noop() {
++        // GIVEN no tasks in lockTaskMode
++
++        // WHEN calling rebuildSystemLockTaskPinnedMode
++        mLockTaskController.rebuildSystemLockTaskPinnedMode();
++
++        // THEN mSupervisor should not be interacted with
++        verify(mSupervisor, never()).mRecentTasks.onLockTaskModeStateChanged(anyInt(), anyInt());
++    }
++
++    @Test
++    public void testRebuildSystemLockTaskPinnedMode_taskDontLock_noop() {
++        // GIVEN in started lock task mode (DONT_LOCK)
++        Task tr = getTask(LOCK_TASK_AUTH_DONT_LOCK);
++        mLockTaskController.startLockTaskMode(tr, true, TEST_UID);
++
++        // WHEN calling rebuildSystemLockTaskPinnedMode
++        mLockTaskController.rebuildSystemLockTaskPinnedMode();
++
++        // THEN mSupervisor should not be interacted with
++        verify(mSupervisor, never()).mRecentTasks.onLockTaskModeStateChanged(anyInt(), anyInt());
++    }
++
++    @Test
++    public void testRebuildSystemLockTaskPinnedMode_notInPinnedMode_noop() {
++        // GIVEN in lock task mode (not PINNED)
++        Task tr = getTask(LOCK_TASK_AUTH_LAUNCHABLE_PRIV);
++        mLockTaskController.startLockTaskMode(tr, false, TEST_UID);
++
++        // WHEN calling rebuildSystemLockTaskPinnedMode
++        mLockTaskController.rebuildSystemLockTaskPinnedMode();
++
++        // THEN notifyLockTaskModeChanged called only once, for the startLockTaskMode call
++        verify(mTaskChangeNotificationController).notifyLockTaskModeChanged(anyInt());
++    }
++
++    @Test
++    public void testRebuildSystemLockTaskPinnedMode_pinnedMode_rebuild() throws Exception {
++        // GIVEN in lock task mode (PINNED)
++        Task tr = getTask(LOCK_TASK_AUTH_PINNABLE);
++        mLockTaskController.startLockTaskMode(tr, true, TEST_UID);
++
++        // WHEN calling rebuildSystemLockTaskPinnedMode
++        mLockTaskController.rebuildSystemLockTaskPinnedMode();
++
++        // THEN these below items are called TWICE, once for startLocktaskMode, once for rebuild
++        // THEN notifyLockTaskModeChanged
++        verify(mTaskChangeNotificationController, times(2)).notifyLockTaskModeChanged(anyInt());
++        // THEN the keyguard should have been disabled
++        verify(mWindowManager, times(2)).disableKeyguard(any(IBinder.class), anyString(),
++                eq(TEST_USER_ID));
++        // THEN the status bar should have been disabled
++        verify(mStatusBarService, times(2)).disable(eq(STATUS_BAR_MASK_PINNED),
++                any(IBinder.class), eq(mPackageName));
++        verify(mStatusBarService, times(2)).disable2(eq(DISABLE2_NONE), any(IBinder.class),
++                eq(mPackageName));
++        // THEN recents should have been notified
++        verify(mRecentTasks, times(2)).onLockTaskModeStateChanged(anyInt(), eq(TEST_USER_ID));
++    }
++
+     @Test
+     public void testStopLockTaskMode() throws Exception {
+         // GIVEN one task record with allowlisted auth that is in lock task mode
+-- 
+2.53.0
+

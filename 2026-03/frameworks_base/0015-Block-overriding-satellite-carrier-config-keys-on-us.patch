@@ -1,0 +1,58 @@
+From 0320119574db8e6e10ad9039e403c6778df4c281 Mon Sep 17 00:00:00 2001
+From: Jayachandran C <jayachandranc@google.com>
+Date: Thu, 23 Oct 2025 11:32:16 -0700
+Subject: [PATCH 15/18] Block overriding satellite carrier config keys on user
+ builds
+
+Add a blocklist to CarrierConfigLoader.overrideConfig to prevent certain sensitive carrier config keys from being overridden on user builds.
+
+The following keys are now blocklisted:
+
+KEY_SATELLITE_ENTITLEMENT_SUPPORTED_BOOL
+KEY_SATELLITE_DATA_SUPPORT_MODE_INT
+
+Attempting to override these keys on a user build will result in a SecurityException. This restriction does not affect userdebug or eng builds, where overriding these values for testing purposes is still allowed.
+
+Test: Added CarrierConfigLoaderTest#testOverrideConfig_blockedKeys to verify the new logic.
+Flag: EXEMPT BUGFIX
+Bug: 442272360
+Cherrypick-From: https://googleplex-android-review.googlesource.com/q/commit:9127724a48d3cf4386c2ea1f4369f4042b484bbe
+Cherrypick-From: https://googleplex-android-review.googlesource.com/q/commit:ebdb85bd47db13c7d4893814c194ee3dbb0176a9
+Cherrypick-From: https://googleplex-android-review.googlesource.com/q/commit:14d4b99129806b97340fd1b6b3db103cef4d5152
+Merged-In: I8bc6f72854ce664b70b852f49c4136cbba31d5e5
+Change-Id: I8bc6f72854ce664b70b852f49c4136cbba31d5e5
+---
+ .../android/telephony/TelephonyManager.java     | 17 +++++++++++++++++
+ 1 file changed, 17 insertions(+)
+
+diff --git a/telephony/java/android/telephony/TelephonyManager.java b/telephony/java/android/telephony/TelephonyManager.java
+index cbdc97be1..cf3ea9de6 100644
+--- a/telephony/java/android/telephony/TelephonyManager.java
++++ b/telephony/java/android/telephony/TelephonyManager.java
+@@ -18520,6 +18520,23 @@ public class TelephonyManager {
+         }
+     }
+ 
++    /**
++     * Get the modem service name.
++     * @return the service name of the modem service which bind to.
++     * @hide
++     */
++    public String getModemService() {
++        try {
++            ITelephony telephony = getITelephony();
++            if (telephony != null) {
++                return telephony.getModemService();
++            }
++        } catch (RemoteException ex) {
++            Rlog.e(TAG, "getModemService RemoteException", ex);
++        }
++        return null;
++    }
++
+     /**
+      * The unattended reboot was prepared successfully.
+      * @hide
+-- 
+2.53.0
+

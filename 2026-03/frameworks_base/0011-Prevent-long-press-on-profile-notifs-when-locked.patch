@@ -1,0 +1,260 @@
+From e507f7e665d3c3103bc990298e130e97868ab602 Mon Sep 17 00:00:00 2001
+From: Julia Reynolds <juliacr@google.com>
+Date: Tue, 11 Nov 2025 15:32:59 -0500
+Subject: [PATCH 11/18] Prevent long press on profile notifs when locked
+
+Test: NotificationGutsManagerTest
+Bug: 378087531
+Flag: EXEMPT BUGFIX
+
+(cherry picked from commit a6280c4ccf96685eed5dc57c2bd9cbbe04209bf1)
+Cherrypick-From: https://googleplex-android-review.googlesource.com/q/commit:a6b65a7c68f282a1dc097cd98d1f358e0b895ef7
+Merged-In: Ic4ab842763d2d9473adcfc426a64434aec5c6ed2
+Change-Id: Ic4ab842763d2d9473adcfc426a64434aec5c6ed2
+---
+ .../row/NotificationGutsManagerTest.kt        | 81 ++++++++++++++++++
+ .../row/NotificationGutsManager.java          | 15 ++++
+ .../NotificationGutsManagerWithScenesTest.kt  | 85 +++++++++++++++++++
+ 3 files changed, 181 insertions(+)
+
+diff --git a/packages/SystemUI/multivalentTests/src/com/android/systemui/statusbar/notification/row/NotificationGutsManagerTest.kt b/packages/SystemUI/multivalentTests/src/com/android/systemui/statusbar/notification/row/NotificationGutsManagerTest.kt
+index 658e7e01e..522bdd6f5 100644
+--- a/packages/SystemUI/multivalentTests/src/com/android/systemui/statusbar/notification/row/NotificationGutsManagerTest.kt
++++ b/packages/SystemUI/multivalentTests/src/com/android/systemui/statusbar/notification/row/NotificationGutsManagerTest.kt
+@@ -649,6 +649,87 @@ class NotificationGutsManagerTest(flags: FlagsParameterization) : SysuiTestCase(
+             )
+     }
+ 
++    @Test
++    fun testShowGuts_lockedPrimary_yes() {
++        whenever(userManager.isManagedProfile(anyInt())).thenReturn(false)
++        whenever(notificationLockscreenUserManager.isLockscreenPublicMode(anyInt()))
++            .thenReturn(true)
++
++        val guts = spy(NotificationGuts(mContext))
++        whenever(guts.post(any())).thenAnswer { invocation: InvocationOnMock ->
++            handler.post(((invocation.arguments[0] as Runnable)))
++            null
++        }
++
++        // Test doesn't support animation since the guts view is not attached.
++        doNothing().whenever(guts).openControls(anyInt(), anyInt(), anyBoolean(), any())
++
++        val realRow = createTestNotificationRow()
++        val menuItem = createTestMenuItem(realRow)
++
++        val row = spy(realRow)
++        whenever(row.windowToken).thenReturn(Binder())
++        whenever(row.guts).thenReturn(guts)
++
++        assertTrue(gutsManager.openGutsInternal(row, 0, 0, menuItem))
++        executor.runAllReady()
++        verify(guts).openControls(anyInt(), anyInt(), anyBoolean(), any<Runnable>())
++    }
++
++    @Test
++    fun testShowGuts_unlockedWork_yes() {
++        whenever(userManager.isManagedProfile(anyInt())).thenReturn(true)
++        whenever(notificationLockscreenUserManager.isLockscreenPublicMode(anyInt()))
++            .thenReturn(false)
++
++        val guts = spy(NotificationGuts(mContext))
++        whenever(guts.post(any())).thenAnswer { invocation: InvocationOnMock ->
++            handler.post(((invocation.arguments[0] as Runnable)))
++            null
++        }
++
++        // Test doesn't support animation since the guts view is not attached.
++        doNothing().whenever(guts).openControls(anyInt(), anyInt(), anyBoolean(), any())
++
++        val realRow = createTestNotificationRow()
++        val menuItem = createTestMenuItem(realRow)
++
++        val row = spy(realRow)
++        whenever(row.windowToken).thenReturn(Binder())
++        whenever(row.guts).thenReturn(guts)
++
++        assertTrue(gutsManager.openGutsInternal(row, 0, 0, menuItem))
++        executor.runAllReady()
++        verify(guts).openControls(anyInt(), anyInt(), anyBoolean(), any<Runnable>())
++    }
++
++    @Test
++    fun testShowGuts_lockedWork_no() {
++        whenever(userManager.isManagedProfile(anyInt())).thenReturn(true)
++        whenever(notificationLockscreenUserManager.isLockscreenPublicMode(anyInt()))
++            .thenReturn(true)
++
++        val guts = spy(NotificationGuts(mContext))
++        whenever(guts.post(any())).thenAnswer { invocation: InvocationOnMock ->
++            handler.post(((invocation.arguments[0] as Runnable)))
++            null
++        }
++
++        // Test doesn't support animation since the guts view is not attached.
++        doNothing().whenever(guts).openControls(anyInt(), anyInt(), anyBoolean(), any())
++
++        val realRow = createTestNotificationRow()
++        val menuItem = createTestMenuItem(realRow)
++
++        val row = spy(realRow)
++        whenever(row.windowToken).thenReturn(Binder())
++        whenever(row.guts).thenReturn(guts)
++
++        assertFalse(gutsManager.openGutsInternal(row, 0, 0, menuItem))
++        executor.runAllReady()
++        verify(guts, never()).openControls(anyInt(), anyInt(), anyBoolean(), any<Runnable>())
++    }
++
+     private fun createTestNotificationRow(
+         block: NotificationEntryBuilder.() -> Unit = {}
+     ): ExpandableNotificationRow {
+diff --git a/packages/SystemUI/src/com/android/systemui/statusbar/notification/row/NotificationGutsManager.java b/packages/SystemUI/src/com/android/systemui/statusbar/notification/row/NotificationGutsManager.java
+index 5b12c9161..57041095d 100644
+--- a/packages/SystemUI/src/com/android/systemui/statusbar/notification/row/NotificationGutsManager.java
++++ b/packages/SystemUI/src/com/android/systemui/statusbar/notification/row/NotificationGutsManager.java
+@@ -69,6 +69,7 @@ import com.android.systemui.statusbar.StatusBarState;
+ import com.android.systemui.statusbar.StatusBarStateControllerImpl;
+ import com.android.systemui.statusbar.notification.AssistantFeedbackController;
+ import com.android.systemui.statusbar.notification.NotificationActivityStarter;
++import com.android.systemui.statusbar.notification.collection.BundleEntryAdapter;
+ import com.android.systemui.statusbar.notification.collection.provider.HighPriorityProvider;
+ import com.android.systemui.statusbar.notification.collection.render.NotifGutsViewListener;
+ import com.android.systemui.statusbar.notification.collection.render.NotifGutsViewManager;
+@@ -836,6 +837,10 @@ public class NotificationGutsManager implements NotifGutsViewManager, CoreStarta
+         }
+ 
+         final ExpandableNotificationRow row = (ExpandableNotificationRow) view;
++        if (affectedByWorkProfileLock(row)) {
++            return false;
++        }
++
+         if (row.isNotificationRowLongClickable()) {
+             view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
+         }
+@@ -906,6 +911,16 @@ public class NotificationGutsManager implements NotifGutsViewManager, CoreStarta
+         return true;
+     }
+ 
++    boolean affectedByWorkProfileLock(ExpandableNotificationRow row) {
++        if (NotificationBundleUi.isEnabled()
++                && row.getEntryAdapter() instanceof BundleEntryAdapter) {
++            return false;
++        }
++        int userId = row.getEntryAdapter().getSbn().getNormalizedUserId();
++        return mUserManager.isManagedProfile(userId)
++                && mLockscreenUserManager.isLockscreenPublicMode(userId);
++    }
++
+     /**
+      * @param gutsListener the listener for open and close guts events
+      */
+diff --git a/packages/SystemUI/tests/src/com/android/systemui/statusbar/notification/row/NotificationGutsManagerWithScenesTest.kt b/packages/SystemUI/tests/src/com/android/systemui/statusbar/notification/row/NotificationGutsManagerWithScenesTest.kt
+index 14876e1f9..04315a583 100644
+--- a/packages/SystemUI/tests/src/com/android/systemui/statusbar/notification/row/NotificationGutsManagerWithScenesTest.kt
++++ b/packages/SystemUI/tests/src/com/android/systemui/statusbar/notification/row/NotificationGutsManagerWithScenesTest.kt
+@@ -85,9 +85,13 @@ import kotlin.test.assertEquals
+ import kotlinx.coroutines.flow.MutableStateFlow
+ import kotlinx.coroutines.test.runCurrent
+ import org.junit.Assert
++import org.junit.Assert.assertFalse
++import org.junit.Assert.assertTrue
+ import org.junit.Before
+ import org.junit.Test
+ import org.junit.runner.RunWith
++import org.mockito.ArgumentMatchers.anyBoolean
++import org.mockito.ArgumentMatchers.anyInt
+ import org.mockito.Mock
+ import org.mockito.MockitoAnnotations
+ import org.mockito.invocation.InvocationOnMock
+@@ -512,6 +516,87 @@ class NotificationGutsManagerWithScenesTest : SysuiTestCase() {
+             )
+     }
+ 
++    @Test
++    fun testShowGuts_lockedPrimary_yes() {
++        whenever(userManager.isManagedProfile(anyInt())).thenReturn(false)
++        whenever(notificationLockscreenUserManager.isLockscreenPublicMode(anyInt()))
++            .thenReturn(true)
++
++        val guts = spy(NotificationGuts(mContext))
++        whenever(guts.post(any())).thenAnswer { invocation: InvocationOnMock ->
++            handler.post(((invocation.arguments[0] as Runnable)))
++            null
++        }
++
++        // Test doesn't support animation since the guts view is not attached.
++        doNothing().whenever(guts).openControls(anyInt(), anyInt(), anyBoolean(), any())
++
++        val realRow = createTestNotificationRow()
++        val menuItem = createTestMenuItem(realRow)
++
++        val row = spy(realRow)
++        whenever(row.windowToken).thenReturn(Binder())
++        whenever(row.guts).thenReturn(guts)
++
++        assertTrue(gutsManager.openGutsInternal(row, 0, 0, menuItem))
++        executor.runAllReady()
++        verify(guts).openControls(anyInt(), anyInt(), anyBoolean(), any<Runnable>())
++    }
++
++    @Test
++    fun testShowGuts_unlockedWork_yes() {
++        whenever(userManager.isManagedProfile(anyInt())).thenReturn(true)
++        whenever(notificationLockscreenUserManager.isLockscreenPublicMode(anyInt()))
++            .thenReturn(false)
++
++        val guts = spy(NotificationGuts(mContext))
++        whenever(guts.post(any())).thenAnswer { invocation: InvocationOnMock ->
++            handler.post(((invocation.arguments[0] as Runnable)))
++            null
++        }
++
++        // Test doesn't support animation since the guts view is not attached.
++        doNothing().whenever(guts).openControls(anyInt(), anyInt(), anyBoolean(), any())
++
++        val realRow = createTestNotificationRow()
++        val menuItem = createTestMenuItem(realRow)
++
++        val row = spy(realRow)
++        whenever(row.windowToken).thenReturn(Binder())
++        whenever(row.guts).thenReturn(guts)
++
++        assertTrue(gutsManager.openGutsInternal(row, 0, 0, menuItem))
++        executor.runAllReady()
++        verify(guts).openControls(anyInt(), anyInt(), anyBoolean(), any<Runnable>())
++    }
++
++    @Test
++    fun testShowGuts_lockedWork_no() {
++        whenever(userManager.isManagedProfile(anyInt())).thenReturn(true)
++        whenever(notificationLockscreenUserManager.isLockscreenPublicMode(anyInt()))
++            .thenReturn(true)
++
++        val guts = spy(NotificationGuts(mContext))
++        whenever(guts.post(any())).thenAnswer { invocation: InvocationOnMock ->
++            handler.post(((invocation.arguments[0] as Runnable)))
++            null
++        }
++
++        // Test doesn't support animation since the guts view is not attached.
++        doNothing().whenever(guts).openControls(anyInt(), anyInt(), anyBoolean(), any())
++
++        val realRow = createTestNotificationRow()
++        val menuItem = createTestMenuItem(realRow)
++
++        val row = spy(realRow)
++        whenever(row.windowToken).thenReturn(Binder())
++        whenever(row.guts).thenReturn(guts)
++
++        assertFalse(gutsManager.openGutsInternal(row, 0, 0, menuItem))
++        executor.runAllReady()
++        verify(guts, never()).openControls(anyInt(), anyInt(), anyBoolean(), any<Runnable>())
++    }
++
+     private fun createTestNotificationRow(
+         block: NotificationEntryBuilder.() -> Unit = {}
+     ): ExpandableNotificationRow {
+-- 
+2.53.0
+

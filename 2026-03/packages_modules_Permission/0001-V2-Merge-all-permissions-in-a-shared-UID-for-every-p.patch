@@ -1,0 +1,634 @@
+From d4b257a0517ddb39806e51afdeebff14d43f9381 Mon Sep 17 00:00:00 2001
+From: Nate Myren <ntmyren@google.com>
+Date: Mon, 3 Nov 2025 10:42:20 -0800
+Subject: [PATCH 1/2] V2 Merge all permissions in a shared UID for every
+ package in that UID
+
+Since every package can use the permissions in the shared UID, even if
+the given package didn't request it, every package should be treated in
+UI as if they all have the total set of requested permissions
+
+Test: atest PermissionTest23
+Bug: 435737668
+Flag: EXEMPT CVE_FIX
+Relnote: cve fix
+BUG: 456903810
+Low Coverage Reason: unclear why coverage is not voted +2
+Cherrypick-From: https://googleplex-android-review.googlesource.com/q/commit:d54ae8b85e686093ec005f21988954177ffe60d7
+Merged-In: I886add5db84b659d52d4a60b17304f017a17dc90
+Change-Id: I886add5db84b659d52d4a60b17304f017a17dc90
+---
+ .../data/LightPackageInfoLiveData.kt          | 90 ++++++++++++++++++-
+ .../permission/data/PermStateLiveData.kt      |  8 +-
+ .../data/UserPackageInfosLiveData.kt          | 17 +++-
+ .../permission/model/AppPermissionGroup.java  | 10 ++-
+ .../permission/model/AppPermissions.java      |  9 +-
+ .../ui/auto/AutoPermissionsUtils.java         | 10 ++-
+ .../ui/model/AppPermissionViewModel.kt        | 13 ++-
+ .../wear/WearAppPermissionGroupsFragment.kt   |  9 +-
+ .../utils/v31/SubattributionUtils.java        |  8 +-
+ .../data/repository/v31/PackageRepository.kt  | 10 ++-
+ tests/cts/permissionui/Android.bp             |  2 +
+ tests/cts/permissionui/AndroidTest.xml        |  2 +
+ .../SharedUidAppNoPerms/Android.bp            | 26 ++++++
+ .../SharedUidAppNoPerms/AndroidManifest.xml   | 23 +++++
+ .../SharedUidAppWithPerms/Android.bp          | 26 ++++++
+ .../SharedUidAppWithPerms/AndroidManifest.xml | 25 ++++++
+ .../permissionui/cts/BaseUsePermissionTest.kt | 13 ++-
+ .../permissionui/cts/PermissionTest23.kt      | 16 ++++
+ 18 files changed, 292 insertions(+), 25 deletions(-)
+ create mode 100644 tests/cts/permissionui/SharedUidAppNoPerms/Android.bp
+ create mode 100644 tests/cts/permissionui/SharedUidAppNoPerms/AndroidManifest.xml
+ create mode 100644 tests/cts/permissionui/SharedUidAppWithPerms/Android.bp
+ create mode 100644 tests/cts/permissionui/SharedUidAppWithPerms/AndroidManifest.xml
+
+diff --git a/PermissionController/src/com/android/permissioncontroller/permission/data/LightPackageInfoLiveData.kt b/PermissionController/src/com/android/permissioncontroller/permission/data/LightPackageInfoLiveData.kt
+index ac3f670..76c2b6b 100644
+--- a/PermissionController/src/com/android/permissioncontroller/permission/data/LightPackageInfoLiveData.kt
++++ b/PermissionController/src/com/android/permissioncontroller/permission/data/LightPackageInfoLiveData.kt
+@@ -21,6 +21,7 @@ import android.app.Application
+ import android.content.Context
+ import android.content.pm.PackageInfo
+ import android.content.pm.PackageManager
++import android.os.Parcel
+ import android.os.UserHandle
+ import android.os.UserManager
+ import android.util.Log
+@@ -109,7 +110,21 @@ private constructor(
+                 }
+ 
+                 val packageManager = Utils.getUserContext(app, user).packageManager
+-                val pI = packageManager.getPackageInfo(packageName, flags)
++                var pI = packageManager.getPackageInfo(packageName, flags)
++                if (pI.sharedUserId != null && pI.applicationInfo != null) {
++                    val sharedPackageNames =
++                        packageManager.getPackagesForUid(pI.applicationInfo!!.uid)
++                    val sharedPackages =
++                        sharedPackageNames?.mapNotNull { otherPackageName ->
++                            try {
++                                val otherPi = packageManager.getPackageInfo(otherPackageName, flags)
++                                otherPi
++                            } catch (_: PackageManager.NameNotFoundException) {
++                                null
++                            }
++                        }
++                    pI = mergePermissionsInSharedUid(pI, sharedPackages)
++                }
+ 
+                 // PackageInfo#requestedPermissionsFlags is not device aware. Hence for device aware
+                 // permissions if the deviceId is not the primary device we need to separately check
+@@ -272,5 +287,78 @@ private constructor(
+                 deviceId
+             )
+         }
++
++        @JvmStatic
++        fun mergePermissionsInSharedUid(
++            base: PackageInfo,
++            flags: Int,
++            packageManager: PackageManager,
++        ): PackageInfo {
++            if (base.sharedUserId != null && base.applicationInfo != null) {
++                val sharedPackageNames =
++                    packageManager.getPackagesForUid(base.applicationInfo!!.uid)
++                val sharedPackages =
++                    sharedPackageNames?.mapNotNull { otherPackageName ->
++                        try {
++                            val otherPi = packageManager.getPackageInfo(otherPackageName, flags)
++                            otherPi
++                        } catch (_: PackageManager.NameNotFoundException) {
++                            null
++                        }
++                    }
++                return mergePermissionsInSharedUid(base, sharedPackages)
++            }
++            return base
++        }
++
++        fun mergePermissionsInSharedUid(
++            base: PackageInfo,
++            otherPackages: List<PackageInfo>?,
++        ): PackageInfo {
++            if (
++                otherPackages == null || base.applicationInfo == null || base.sharedUserId == null
++            ) {
++                return base
++            }
++
++            val allPackages =
++                if (base in otherPackages) otherPackages
++                else otherPackages.toMutableList().apply { add(base) }
++            val permissionStates = mutableMapOf<String, Int>()
++            allPackages.forEach { packageInfo ->
++                if (
++                    packageInfo.applicationInfo?.uid != base.applicationInfo?.uid ||
++                        packageInfo.requestedPermissions == null
++                ) {
++                    return@forEach
++                }
++                packageInfo.requestedPermissions!!.forEachIndexed { index, permission ->
++                    val existingFlags = permissionStates.getOrDefault(permission, 0)
++                    permissionStates[permission] =
++                        existingFlags or packageInfo.requestedPermissionsFlags!![index]
++                }
++            }
++            val requestedPermissions = permissionStates.keys.toTypedArray()
++            val requestedPermissionsFlags = IntArray(requestedPermissions.size)
++            requestedPermissions.forEachIndexed { index, permission ->
++                requestedPermissionsFlags[index] = permissionStates[permission]!!
++            }
++            val packageCopy = copyPackageInfo(base)
++            packageCopy.requestedPermissions = requestedPermissions
++            packageCopy.requestedPermissionsFlags = requestedPermissionsFlags
++            return packageCopy
++        }
++
++        fun copyPackageInfo(original: PackageInfo): PackageInfo {
++            val parcel = Parcel.obtain()
++            try {
++                original.writeToParcel(parcel, 0)
++                parcel.setDataPosition(0)
++                val copy = PackageInfo.CREATOR.createFromParcel(parcel)
++                return copy
++            } finally {
++                parcel.recycle()
++            }
++        }
+     }
+ }
+diff --git a/PermissionController/src/com/android/permissioncontroller/permission/data/PermStateLiveData.kt b/PermissionController/src/com/android/permissioncontroller/permission/data/PermStateLiveData.kt
+index 358081f..32e5c3a 100644
+--- a/PermissionController/src/com/android/permissioncontroller/permission/data/PermStateLiveData.kt
++++ b/PermissionController/src/com/android/permissioncontroller/permission/data/PermStateLiveData.kt
+@@ -81,7 +81,13 @@ private constructor(
+ 
+         val packageInfo = packageInfoLiveData.value
+         val permissionGroup = groupLiveData.value
+-        if (packageInfo == null || permissionGroup == null) {
++        if (
++            packageInfo == null ||
++                permissionGroup == null ||
++                !packageInfo.requestedPermissions.any { it in permissionGroup.permissionInfos }
++        ) {
++            // package is invalid, permission group is invalid, or the package requests no
++            // permissions in the given group
+             invalidateSingle(KotlinUtils.Quadruple(packageName, permGroupName, user, deviceId))
+             postValue(null)
+             return
+diff --git a/PermissionController/src/com/android/permissioncontroller/permission/data/UserPackageInfosLiveData.kt b/PermissionController/src/com/android/permissioncontroller/permission/data/UserPackageInfosLiveData.kt
+index 884772f..0ff273a 100644
+--- a/PermissionController/src/com/android/permissioncontroller/permission/data/UserPackageInfosLiveData.kt
++++ b/PermissionController/src/com/android/permissioncontroller/permission/data/UserPackageInfosLiveData.kt
+@@ -95,7 +95,22 @@ private constructor(private val app: Application, private val user: UserHandle)
+                 )
+             }
+ 
+-        postValue(packageInfos.map { packageInfo -> LightPackageInfo(packageInfo) })
++        postValue(
++            packageInfos.map { packageInfo ->
++                val mergedPackageInfo =
++                    if (packageInfo.sharedUserId != null) {
++                        val otherPackages =
++                            packageInfos.filter { it.sharedUserId == packageInfo.sharedUserId }
++                        LightPackageInfoLiveData.mergePermissionsInSharedUid(
++                            packageInfo,
++                            otherPackages,
++                        )
++                    } else {
++                        packageInfo
++                    }
++                LightPackageInfo(mergedPackageInfo)
++            }
++        )
+     }
+ 
+     override fun onActive() {
+diff --git a/PermissionController/src/com/android/permissioncontroller/permission/model/AppPermissionGroup.java b/PermissionController/src/com/android/permissioncontroller/permission/model/AppPermissionGroup.java
+index f6c98da..ed6ef1a 100644
+--- a/PermissionController/src/com/android/permissioncontroller/permission/model/AppPermissionGroup.java
++++ b/PermissionController/src/com/android/permissioncontroller/permission/model/AppPermissionGroup.java
+@@ -57,6 +57,7 @@ import androidx.annotation.StringRes;
+ import com.android.modules.utils.build.SdkLevel;
+ import com.android.permissioncontroller.PermissionControllerApplication;
+ import com.android.permissioncontroller.R;
++import com.android.permissioncontroller.permission.data.LightPackageInfoLiveData;
+ import com.android.permissioncontroller.permission.service.LocationAccessCheck;
+ import com.android.permissioncontroller.permission.utils.ArrayUtils;
+ import com.android.permissioncontroller.permission.utils.ContextCompat;
+@@ -226,8 +227,11 @@ public final class AppPermissionGroup implements Comparable<AppPermissionGroup>
+     public static AppPermissionGroup create(Application app, String packageName,
+             String permissionGroupName, UserHandle user, boolean delayChanges) {
+         try {
+-            PackageInfo packageInfo = Utils.getUserContext(app, user).getPackageManager()
+-                    .getPackageInfo(packageName, PackageManager.GET_PERMISSIONS);
++            PackageManager pm = Utils.getUserContext(app, user).getPackageManager();
++            int flags = PackageManager.GET_PERMISSIONS;
++            PackageInfo packageInfo = pm.getPackageInfo(packageName, flags);
++            PackageInfo mergedPackageInfo = LightPackageInfoLiveData.mergePermissionsInSharedUid(
++                    packageInfo, flags, pm);
+             PackageItemInfo groupInfo = Utils.getGroupInfo(permissionGroupName, app);
+             if (groupInfo == null) {
+                 return null;
+@@ -238,7 +242,7 @@ public final class AppPermissionGroup implements Comparable<AppPermissionGroup>
+                 permissionInfos = Utils.getPermissionInfosForGroup(app.getPackageManager(),
+                             groupInfo.name);
+             }
+-            return create(app, packageInfo, groupInfo, permissionInfos, delayChanges);
++            return create(app, mergedPackageInfo, groupInfo, permissionInfos, delayChanges);
+         } catch (PackageManager.NameNotFoundException e) {
+             return null;
+         }
+diff --git a/PermissionController/src/com/android/permissioncontroller/permission/model/AppPermissions.java b/PermissionController/src/com/android/permissioncontroller/permission/model/AppPermissions.java
+index 2e5ee2f..1495c1d 100644
+--- a/PermissionController/src/com/android/permissioncontroller/permission/model/AppPermissions.java
++++ b/PermissionController/src/com/android/permissioncontroller/permission/model/AppPermissions.java
+@@ -22,6 +22,7 @@ import android.content.pm.PackageManager;
+ import android.os.UserHandle;
+ import android.util.ArrayMap;
+ 
++import com.android.permissioncontroller.permission.data.LightPackageInfoLiveData;
+ import com.android.permissioncontroller.permission.utils.Utils;
+ 
+ import java.util.ArrayList;
+@@ -110,10 +111,12 @@ public final class AppPermissions {
+ 
+     private void loadPackageInfo() {
+         try {
+-            mPackageInfo = mContext.createPackageContextAsUser(mPackageInfo.packageName, 0,
++            PackageManager pm = mContext.createPackageContextAsUser(mPackageInfo.packageName, 0,
+                     UserHandle.getUserHandleForUid(mPackageInfo.applicationInfo.uid))
+-                    .getPackageManager().getPackageInfo(mPackageInfo.packageName,
+-                            PackageManager.GET_PERMISSIONS);
++                    .getPackageManager();
++            int flags = PackageManager.GET_PERMISSIONS;
++            PackageInfo pI = pm.getPackageInfo(mPackageInfo.packageName, flags);
++            mPackageInfo = LightPackageInfoLiveData.mergePermissionsInSharedUid(pI, flags, pm);
+         } catch (PackageManager.NameNotFoundException e) {
+             if (mOnErrorCallback != null) {
+                 mOnErrorCallback.run();
+diff --git a/PermissionController/src/com/android/permissioncontroller/permission/ui/auto/AutoPermissionsUtils.java b/PermissionController/src/com/android/permissioncontroller/permission/ui/auto/AutoPermissionsUtils.java
+index 16544fc..4627574 100644
+--- a/PermissionController/src/com/android/permissioncontroller/permission/ui/auto/AutoPermissionsUtils.java
++++ b/PermissionController/src/com/android/permissioncontroller/permission/ui/auto/AutoPermissionsUtils.java
+@@ -28,6 +28,7 @@ import android.util.Log;
+ import androidx.annotation.NonNull;
+ import androidx.preference.Preference;
+ 
++import com.android.permissioncontroller.permission.data.LightPackageInfoLiveData;
+ import com.android.permissioncontroller.permission.utils.Utils;
+ 
+ /** Common utilities shared between permissions settings. */
+@@ -41,9 +42,12 @@ public final class AutoPermissionsUtils {
+     public static PackageInfo getPackageInfo(Activity activity, @NonNull String packageName,
+             @NonNull UserHandle userHandle) {
+         try {
+-            return activity.createPackageContextAsUser(packageName, 0, userHandle)
+-                    .getPackageManager()
+-                    .getPackageInfo(packageName, PackageManager.GET_PERMISSIONS);
++            PackageManager pm = activity.createPackageContextAsUser(packageName, 0, userHandle)
++                    .getPackageManager();
++            int flags = PackageManager.GET_PERMISSIONS;
++
++            return LightPackageInfoLiveData.mergePermissionsInSharedUid(
++                    pm.getPackageInfo(packageName, flags), flags, pm);
+         } catch (PackageManager.NameNotFoundException e) {
+             Log.i(LOG_TAG, "No package:" + activity.getCallingPackage(), e);
+             return null;
+diff --git a/PermissionController/src/com/android/permissioncontroller/permission/ui/model/AppPermissionViewModel.kt b/PermissionController/src/com/android/permissioncontroller/permission/ui/model/AppPermissionViewModel.kt
+index 2da7daf..262ed8a 100644
+--- a/PermissionController/src/com/android/permissioncontroller/permission/ui/model/AppPermissionViewModel.kt
++++ b/PermissionController/src/com/android/permissioncontroller/permission/ui/model/AppPermissionViewModel.kt
+@@ -414,14 +414,19 @@ class AppPermissionViewModel(
+             }
+ 
+             private fun onMediaPermGroupUpdate(
+-                permGroupName: String,
++                mediaPermGroupName: String,
+                 permGroup: LightAppPermGroup?
+             ) {
+                 if (permGroup == null) {
+-                    mediaStorageSupergroupPermGroups.remove(permGroupName)
+-                    value = null
++                    mediaStorageSupergroupPermGroups.remove(mediaPermGroupName)
++                    if (permGroupName == Manifest.permission_group.STORAGE) {
++                        // Only invalidate this setting if this is the legacy storage group. It is
++                        // valid, for example, for T+ apps to not request any of the legacy
++                        // STORAGE permissions.
++                        value = null
++                    }
+                 } else {
+-                    mediaStorageSupergroupPermGroups[permGroupName] = permGroup
++                    mediaStorageSupergroupPermGroups[mediaPermGroupName] = permGroup
+                     update()
+                 }
+             }
+diff --git a/PermissionController/src/com/android/permissioncontroller/permission/ui/wear/WearAppPermissionGroupsFragment.kt b/PermissionController/src/com/android/permissioncontroller/permission/ui/wear/WearAppPermissionGroupsFragment.kt
+index 06d14cc..d2233d8 100644
+--- a/PermissionController/src/com/android/permissioncontroller/permission/ui/wear/WearAppPermissionGroupsFragment.kt
++++ b/PermissionController/src/com/android/permissioncontroller/permission/ui/wear/WearAppPermissionGroupsFragment.kt
+@@ -36,6 +36,7 @@ import androidx.lifecycle.ViewModelProvider
+ import com.android.modules.utils.build.SdkLevel
+ import com.android.permissioncontroller.Constants.EXTRA_SESSION_ID
+ import com.android.permissioncontroller.R
++import com.android.permissioncontroller.permission.data.LightPackageInfoLiveData
+ import com.android.permissioncontroller.permission.model.AppPermissions
+ import com.android.permissioncontroller.permission.model.v31.AppPermissionUsage
+ import com.android.permissioncontroller.permission.model.v31.PermissionUsages
+@@ -75,7 +76,13 @@ class WearAppPermissionGroupsFragment : Fragment(), PermissionsUsagesChangeCallb
+         val packageManager = activity.packageManager
+         val packageInfo: PackageInfo? =
+             try {
+-                packageManager.getPackageInfo(packageName, PackageManager.GET_PERMISSIONS)
++                val flags = PackageManager.GET_PERMISSIONS
++                val pI = packageManager.getPackageInfo(packageName, flags)
++                LightPackageInfoLiveData.mergePermissionsInSharedUid(
++                    pI,
++                    flags,
++                    activity.packageManager
++                )
+             } catch (e: PackageManager.NameNotFoundException) {
+                 Log.i(LOG_TAG, "No package:" + activity.callingPackage, e)
+                 null
+diff --git a/PermissionController/src/com/android/permissioncontroller/permission/utils/v31/SubattributionUtils.java b/PermissionController/src/com/android/permissioncontroller/permission/utils/v31/SubattributionUtils.java
+index 8919953..f5966c5 100644
+--- a/PermissionController/src/com/android/permissioncontroller/permission/utils/v31/SubattributionUtils.java
++++ b/PermissionController/src/com/android/permissioncontroller/permission/utils/v31/SubattributionUtils.java
+@@ -29,6 +29,8 @@ import androidx.annotation.Nullable;
+ import androidx.annotation.RequiresApi;
+ 
+ import com.android.modules.utils.build.SdkLevel;
++import com.android.permissioncontroller.permission.data.LightAppPermGroupLiveData;
++import com.android.permissioncontroller.permission.data.LightPackageInfoLiveData;
+ import com.android.permissioncontroller.permission.model.livedatatypes.LightPackageInfo;
+ 
+ import java.util.HashMap;
+@@ -81,8 +83,10 @@ public class SubattributionUtils {
+ 
+         PackageInfo packageInfo;
+         try {
+-            packageInfo = context.getPackageManager().getPackageInfo(appInfo.packageName,
+-                    PackageManager.GET_PERMISSIONS | PackageManager.GET_ATTRIBUTIONS);
++            int flags = PackageManager.GET_PERMISSIONS | PackageManager.GET_ATTRIBUTIONS;
++            packageInfo = context.getPackageManager().getPackageInfo(appInfo.packageName, flags);
++            packageInfo = LightPackageInfoLiveData.mergePermissionsInSharedUid(packageInfo, flags,
++                    context.getPackageManager());
+         } catch (PackageManager.NameNotFoundException e) {
+             return null;
+         }
+diff --git a/PermissionController/src/com/android/permissioncontroller/pm/data/repository/v31/PackageRepository.kt b/PermissionController/src/com/android/permissioncontroller/pm/data/repository/v31/PackageRepository.kt
+index a7e0614..dbcf567 100644
+--- a/PermissionController/src/com/android/permissioncontroller/pm/data/repository/v31/PackageRepository.kt
++++ b/PermissionController/src/com/android/permissioncontroller/pm/data/repository/v31/PackageRepository.kt
+@@ -23,6 +23,7 @@ import android.graphics.drawable.Drawable
+ import android.os.UserHandle
+ import android.util.Log
+ import com.android.modules.utils.build.SdkLevel
++import com.android.permissioncontroller.permission.data.LightPackageInfoLiveData
+ import com.android.permissioncontroller.permission.utils.Utils
+ import com.android.permissioncontroller.pm.data.model.v31.PackageAttributionModel
+ import com.android.permissioncontroller.pm.data.model.v31.PackageInfoModel
+@@ -106,10 +107,13 @@ class PackageRepositoryImpl(
+     ): PackageInfoModel? =
+         withContext(dispatcher) {
+             try {
++                val pm = Utils.getUserContext(app, user).packageManager
+                 val packageInfo =
+-                    Utils.getUserContext(app, user)
+-                        .packageManager
+-                        .getPackageInfo(packageName, flags)
++                    LightPackageInfoLiveData.mergePermissionsInSharedUid(
++                        pm.getPackageInfo(packageName, flags),
++                        flags,
++                        pm,
++                    )
+                 PackageInfoModel(packageInfo)
+             } catch (e: PackageManager.NameNotFoundException) {
+                 Log.w(LOG_TAG, "package $packageName not found for user ${user.identifier}")
+diff --git a/tests/cts/permissionui/Android.bp b/tests/cts/permissionui/Android.bp
+index c047b39..292c1ef 100644
+--- a/tests/cts/permissionui/Android.bp
++++ b/tests/cts/permissionui/Android.bp
+@@ -74,6 +74,8 @@ android_test {
+         ":CtsAppThatAccessesMicAndCameraPermission",
+         ":CtsUsePermissionAppStorage33",
+         ":CtsAppThatMakesTwoPermRequests",
++        ":CtsAppWithSharedUidNoPerms",
++        ":CtsAppWithSharedUidWithPerms",
+     ],
+     test_suites: [
+         "cts",
+diff --git a/tests/cts/permissionui/AndroidTest.xml b/tests/cts/permissionui/AndroidTest.xml
+index d5d8a27..f1b41d4 100644
+--- a/tests/cts/permissionui/AndroidTest.xml
++++ b/tests/cts/permissionui/AndroidTest.xml
+@@ -73,6 +73,8 @@
+         <option name="push" value="CtsAppThatAccessesMicAndCameraPermission.apk->/data/local/tmp/cts-permissionui/CtsAppThatAccessesMicAndCameraPermission.apk" />
+         <option name="push" value="CtsUsePermissionAppStorage33.apk->/data/local/tmp/cts-permissionui/CtsUsePermissionAppStorage33.apk" />
+         <option name="push" value="CtsAppThatMakesTwoPermRequests.apk->/data/local/tmp/cts-permissionui/CtsAppThatMakesTwoPermRequests.apk" />
++        <option name="push" value="CtsAppWithSharedUidNoPerms.apk->/data/local/tmp/cts-permissionui/CtsAppWithSharedUidNoPerms.apk" />
++        <option name="push" value="CtsAppWithSharedUidWithPerms.apk->/data/local/tmp/cts-permissionui/CtsAppWithSharedUidWithPerms.apk" />
+     </target_preparer>
+ 
+     <target_preparer class="com.android.tradefed.targetprep.RunCommandTargetPreparer">
+diff --git a/tests/cts/permissionui/SharedUidAppNoPerms/Android.bp b/tests/cts/permissionui/SharedUidAppNoPerms/Android.bp
+new file mode 100644
+index 0000000..9a7b267
+--- /dev/null
++++ b/tests/cts/permissionui/SharedUidAppNoPerms/Android.bp
+@@ -0,0 +1,26 @@
++//
++// Copyright (C) 2025 The Android Open Source Project
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//      http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++//
++
++package {
++    default_applicable_licenses: ["Android-Apache-2.0"],
++}
++
++android_test_helper_app {
++    name: "CtsAppWithSharedUidNoPerms",
++    defaults: ["mts-target-sdk-version-current"],
++    certificate: ":cts-testkey2",
++    min_sdk_version: "30",
++}
+diff --git a/tests/cts/permissionui/SharedUidAppNoPerms/AndroidManifest.xml b/tests/cts/permissionui/SharedUidAppNoPerms/AndroidManifest.xml
+new file mode 100644
+index 0000000..5fa8d8b
+--- /dev/null
++++ b/tests/cts/permissionui/SharedUidAppNoPerms/AndroidManifest.xml
+@@ -0,0 +1,23 @@
++<?xml version="1.0" encoding="utf-8"?>
++
++<!--
++  ~ Copyright (C) 2025 The Android Open Source Project
++  ~
++  ~ Licensed under the Apache License, Version 2.0 (the "License");
++  ~ you may not use this file except in compliance with the License.
++  ~ You may obtain a copy of the License at
++  ~
++  ~      http://www.apache.org/licenses/LICENSE-2.0
++  ~
++  ~ Unless required by applicable law or agreed to in writing, software
++  ~ distributed under the License is distributed on an "AS IS" BASIS,
++  ~ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++  ~ See the License for the specific language governing permissions and
++  ~ limitations under the License.
++  -->
++
++<manifest
++    xmlns:android="http://schemas.android.com/apk/res/android"
++    package="android.permissionui.cts.appwithshareduidnoperms"
++    android:sharedUserId="permission.test.shared.uid">
++</manifest>
+diff --git a/tests/cts/permissionui/SharedUidAppWithPerms/Android.bp b/tests/cts/permissionui/SharedUidAppWithPerms/Android.bp
+new file mode 100644
+index 0000000..65626d8
+--- /dev/null
++++ b/tests/cts/permissionui/SharedUidAppWithPerms/Android.bp
+@@ -0,0 +1,26 @@
++//
++// Copyright (C) 2025 The Android Open Source Project
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//      http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++//
++
++package {
++    default_applicable_licenses: ["Android-Apache-2.0"],
++}
++
++android_test_helper_app {
++    name: "CtsAppWithSharedUidWithPerms",
++    defaults: ["mts-target-sdk-version-current"],
++    certificate: ":cts-testkey2",
++    min_sdk_version: "30",
++}
+diff --git a/tests/cts/permissionui/SharedUidAppWithPerms/AndroidManifest.xml b/tests/cts/permissionui/SharedUidAppWithPerms/AndroidManifest.xml
+new file mode 100644
+index 0000000..48f263a
+--- /dev/null
++++ b/tests/cts/permissionui/SharedUidAppWithPerms/AndroidManifest.xml
+@@ -0,0 +1,25 @@
++<?xml version="1.0" encoding="utf-8"?>
++
++<!--
++  ~ Copyright (C) 2025 The Android Open Source Project
++  ~
++  ~ Licensed under the Apache License, Version 2.0 (the "License");
++  ~ you may not use this file except in compliance with the License.
++  ~ You may obtain a copy of the License at
++  ~
++  ~      http://www.apache.org/licenses/LICENSE-2.0
++  ~
++  ~ Unless required by applicable law or agreed to in writing, software
++  ~ distributed under the License is distributed on an "AS IS" BASIS,
++  ~ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++  ~ See the License for the specific language governing permissions and
++  ~ limitations under the License.
++  -->
++
++<manifest
++    xmlns:android="http://schemas.android.com/apk/res/android"
++    package="android.permissionui.cts.appwithshareduidwithperms"
++    android:sharedUserId="permission.test.shared.uid">
++
++    <uses-permission android:name="android.permission.RECORD_AUDIO" />
++</manifest>
+diff --git a/tests/cts/permissionui/src/android/permissionui/cts/BaseUsePermissionTest.kt b/tests/cts/permissionui/src/android/permissionui/cts/BaseUsePermissionTest.kt
+index 182a5f9..b4a1c9f 100644
+--- a/tests/cts/permissionui/src/android/permissionui/cts/BaseUsePermissionTest.kt
++++ b/tests/cts/permissionui/src/android/permissionui/cts/BaseUsePermissionTest.kt
+@@ -103,9 +103,16 @@ abstract class BaseUsePermissionTest : BasePermissionTest() {
+         const val APP_APK_PATH_OTHER_APP = "$APK_DIRECTORY/CtsDifferentPkgNameApp.apk"
+         const val APP_APK_PATH_TWO_PERM_REQUESTS =
+             "$APK_DIRECTORY/CtsAppThatMakesTwoPermRequests.apk"
++        const val APP_APK_PATH_SHARED_UID_NO_PERMS = "$APK_DIRECTORY/CtsAppWithSharedUidNoPerms.apk"
++        const val APP_APK_PATH_SHARED_UID_WITH_PERMS =
++            "$APK_DIRECTORY/CtsAppWithSharedUidWithPerms.apk"
+         const val APP_PACKAGE_NAME = "android.permissionui.cts.usepermission"
+         const val OTHER_APP_PACKAGE_NAME = "android.permissionui.cts.usepermissionother"
+         const val TEST_INSTALLER_PACKAGE_NAME = "android.permissionui.cts"
++        const val SHARED_UID_NO_PERMS_PACKAGE_NAME =
++            "android.permissionui.cts.appwithshareduidnoperms"
++        const val SHARED_UID_WITH_PERMS_PACKAGE_NAME =
++            "android.permissionui.cts.appwithshareduidwithperms"
+ 
+         const val ALLOW_ALL_BUTTON =
+             "com.android.permissioncontroller:id/permission_allow_all_button"
+@@ -1143,7 +1150,7 @@ abstract class BaseUsePermissionTest : BasePermissionTest() {
+         )
+     }
+ 
+-    private fun navigateToAppPermissionSettings() {
++    private fun navigateToAppPermissionSettings(packageName: String = APP_PACKAGE_NAME) {
+         if (isTv) {
+             clearTargetSdkWarning(1000L)
+             pressHome()
+@@ -1161,7 +1168,7 @@ abstract class BaseUsePermissionTest : BasePermissionTest() {
+                     doAndWaitForWindowTransition {
+                         context.startActivity(
+                             Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+-                                data = Uri.fromParts("package", APP_PACKAGE_NAME, null)
++                                data = Uri.fromParts("package", packageName, null)
+                                 addCategory(Intent.CATEGORY_DEFAULT)
+                                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                 addFlags(Intent.FLAG_ACTIVITY_CLEAR_TASK)
+@@ -1209,7 +1216,7 @@ abstract class BaseUsePermissionTest : BasePermissionTest() {
+     ) {
+         val useLegacyNavigation = isWatch || isAutomotive || manuallyNavigate
+         if (useLegacyNavigation) {
+-            navigateToAppPermissionSettings()
++            navigateToAppPermissionSettings(packageName)
+             val permissionLabel = getPermissionLabel(permission)
+             if (isWatch) {
+                 clickAndWaitForWindowTransition(
+diff --git a/tests/cts/permissionui/src/android/permissionui/cts/PermissionTest23.kt b/tests/cts/permissionui/src/android/permissionui/cts/PermissionTest23.kt
+index 4f06fb4..b7a8a51 100644
+--- a/tests/cts/permissionui/src/android/permissionui/cts/PermissionTest23.kt
++++ b/tests/cts/permissionui/src/android/permissionui/cts/PermissionTest23.kt
+@@ -375,6 +375,22 @@ class PermissionTest23 : BaseUsePermissionTest() {
+         }
+     }
+ 
++    @Test
++    fun testSharedUidAppsSharePermissionsInUi() {
++        try {
++            installPackage(APP_APK_PATH_SHARED_UID_NO_PERMS)
++            installPackage(APP_APK_PATH_SHARED_UID_WITH_PERMS)
++            navigateToIndividualPermissionSetting(
++                android.Manifest.permission.RECORD_AUDIO,
++                SHARED_UID_NO_PERMS_PACKAGE_NAME
++            )
++            clicksDenyInSettings()
++        } finally {
++            uninstallPackage(SHARED_UID_NO_PERMS_PACKAGE_NAME)
++            uninstallPackage(SHARED_UID_WITH_PERMS_PACKAGE_NAME)
++        }
++    }
++
+     private fun denyPermissionRequestWithPrejudice() {
+         if (isTv || isWatch) {
+             clickPermissionRequestDontAskAgainButton()
+-- 
+2.53.0
+

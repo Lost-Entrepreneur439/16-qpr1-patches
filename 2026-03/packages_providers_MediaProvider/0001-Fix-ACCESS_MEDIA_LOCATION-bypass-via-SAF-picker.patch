@@ -1,0 +1,65 @@
+From 7997123123f84051b3b2d145d96b8bb947847a43 Mon Sep 17 00:00:00 2001
+From: Himanshu Arora <hmarora@google.com>
+Date: Fri, 24 Oct 2025 16:47:37 +0000
+Subject: [PATCH 1/2] Fix ACCESS_MEDIA_LOCATION bypass via SAF picker
+
+When an app uses a picker to access media files, the picker should respect the app's permissions. Currently, it is possible to bypass the ACCESS_MEDIA_LOCATION permission and get unredacted location data.
+
+This change fixes this by having MediaProvider check the permissions of the app on whose behalf the media is being opened. When a `mediaCapabilitiesUid` is passed, MediaProvider now checks if that UID has the necessary permissions.
+
+Bug: 326211886
+Test: manual
+Flag: EXEMPT BUGFIX
+Cherrypick-From: https://googleplex-android-review.googlesource.com/q/commit:c8a1e15d3a79c4b27406c22f6036ff66a35fe41e
+Merged-In: I7ad51535d5ae8a3803162f688c4794edbbcfb167
+Change-Id: I7ad51535d5ae8a3803162f688c4794edbbcfb167
+---
+ .../providers/media/MediaProvider.java        | 20 +++++++++++++++++--
+ 1 file changed, 18 insertions(+), 2 deletions(-)
+
+diff --git a/src/com/android/providers/media/MediaProvider.java b/src/com/android/providers/media/MediaProvider.java
+index d91035d..be3317c 100644
+--- a/src/com/android/providers/media/MediaProvider.java
++++ b/src/com/android/providers/media/MediaProvider.java
+@@ -10363,7 +10363,7 @@ public class MediaProvider extends ContentProvider {
+ 
+         // Figure out if we need to redact contents
+         final boolean redactionNeeded = isRedactionNeededForOpenViaContentResolver(redactedUri,
+-                ownerPackageName, file);
++                ownerPackageName, file, opts);
+         long[] redactionRanges;
+         try {
+             redactionRanges = redactionNeeded ? RedactionUtils.getRedactionRanges(file)
+@@ -10482,12 +10482,28 @@ public class MediaProvider extends ContentProvider {
+     }
+ 
+     private boolean isRedactionNeededForOpenViaContentResolver(Uri redactedUri,
+-            String ownerPackageName, File file) {
++            String ownerPackageName, File file, Bundle opts) {
+         // Redacted Uris should always redact information
+         if (redactedUri != null) {
+             return true;
+         }
+ 
++        // If the caller provides a media capabilities UID, we check if that UID has the
++        // PERMISSION_IS_REDACTION_NEEDED permission. If so, we redact the data. This is
++        // used for cases where an app is acting on behalf of another app, and we need
++        // to respect the capabilities of the app for which the action is being performed.
++        if (opts != null) {
++            final int mediaCapabilitiesUid = opts.getInt(MediaStore.EXTRA_MEDIA_CAPABILITIES_UID);
++            if (mediaCapabilitiesUid > 0) {
++                final LocalCallingIdentity identity = LocalCallingIdentity.fromExternal(
++                        getContext(),
++                        mUserCache, mediaCapabilitiesUid, null, null);
++                if (identity.hasPermission(PERMISSION_IS_REDACTION_NEEDED)) {
++                    return true;
++                }
++            }
++        }
++
+         final boolean callerIsOwner = Objects.equals(getCallingPackageOrSelf(), ownerPackageName);
+         if (callerIsOwner) {
+             return false;
+-- 
+2.53.0
+
