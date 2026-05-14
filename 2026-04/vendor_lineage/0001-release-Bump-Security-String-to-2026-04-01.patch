@@ -1,0 +1,40 @@
+From bac885ef5d98d1eb1c437f65b9c71de0088ff1de Mon Sep 17 00:00:00 2001
+From: Michael Bestas <mkbestas@lineageos.org>
+Date: Tue, 07 Apr 2026 01:55:39 +0300
+Subject: [PATCH] release: Bump Security String to 2026-04-01
+
+Implemented:
+============
+CVE:            References:    Type:  Severity:  Updated AOSP versions:
+CVE-2026-0049   A-456471290    DoS    Critical   14, 15, 16, 16-qpr2
+
+Previously Implemented:
+================
+None
+
+Not Implemented:
+================
+None
+
+Not Applicable (platform source):
+=================================
+None
+
+Change-Id: If05c2c9e184c545b2184d1ea8a269a79172b5cf7
+---
+ .../flag_values/bp3a/RELEASE_PLATFORM_SECURITY_PATCH.textproto  | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/release/flag_values/bp3a/RELEASE_PLATFORM_SECURITY_PATCH.textproto b/release/flag_values/bp3a/RELEASE_PLATFORM_SECURITY_PATCH.textproto
+index f0369e2..d484f23 100644
+--- a/release/flag_values/bp3a/RELEASE_PLATFORM_SECURITY_PATCH.textproto
++++ b/release/flag_values/bp3a/RELEASE_PLATFORM_SECURITY_PATCH.textproto
+@@ -1,4 +1,4 @@
+ name: "RELEASE_PLATFORM_SECURITY_PATCH"
+ value {
+-  string_value: "2026-03-01"
++  string_value: "2026-04-01"
+ }
+-- 
+2.53.0
+
